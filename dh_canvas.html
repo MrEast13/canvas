@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>canvas</canvas></title>
+    <style>
+        .container {
+            display: flex;
+            gap: 20px;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+        
+        #toolbar {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        #myCanvas {
+            border: 2px solid #333;
+            background: white;
+            box-shadow: 0 2px 6px rgba(0,0,0,0.1);
+        }
+        
+        button {
+            padding: 10px 15px;
+            cursor: pointer;
+            background: #fff;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            transition: all 0.2s;
+        }
+        
+        button:hover {
+            background: #f0f0f0;
+        }
+        
+        .active {
+            background: #4CAF50 !important;
+            color: white;
+            border-color: #45a049;
+        }
+        .style-controls {
+                margin-top: 20px;
+                display: flex;
+                flex-direction: column;
+                gap: 10px;
+        }
+            
+        .style-controls input[type="color"] {
+            width: 100%;
+            height: 40px;
+            padding: 2px;
+            cursor: pointer;
+        }
+        
+        .style-controls input[type="range"] {
+            width: 100%;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div id="toolbar">
+            <button data-shape="line" class="active">自由线</button>
+            <button data-shape="sline">直线</button>
+            <button data-shape="circle">圆形</button>
+            <button data-shape="rect">矩形</button>
+            <button data-shape="roundRect">圆角矩形</button>
+            <button data-shape="undo">撤销</button>
+            <button data-shape="redo">重做</button>
+            <button id="clearBtn">清空画布</button>
+            <div class="style-controls">
+                <input type="color" id="bgColor" title="背景颜色" value="#ffffff">
+                <input type="color" id="borderColor" value="#333333" title="边框颜色">
+                <input type="range" id="borderWidth" min="1" max="20" value="2" title="边框宽度">
+            </div>
+        </div>
+        <canvas id="myCanvas" width="1000" height="600"></canvas>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('myCanvas');
+        const ctx = canvas.getContext('2d');
+        let currentShape = 'line';
+        let doStack = [];      // 操作记录栈
+        let redoStack = [];     // 重做记录栈
+        let isDrawing = false;  // 绘制状态
+        let startX, startY;     // 起点坐标
+        let currentX, currentY; // 当前坐标
+        let freeLinePoints = []; // 自由线路径点集合
+
+        // 在全局添加当前样式设置
+        let currentStyle = {
+            background: 'transparent',
+            borderColor: '#333',
+            borderWidth: 2
+        };
+
+        // 初始化画布背景
+        ctx.fillStyle = '#fff';
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        // 工具栏事件处理
+        document.querySelectorAll('#toolbar button').forEach(button => {
+            button.addEventListener('click', (e) => {
+                if (e.target.dataset.shape === 'undo') {
+                    undo();
+                } else if (e.target.dataset.shape === 'redo') {
+                    redo();
+                } else if (e.target.id === 'clearBtn') {
+                    clearCanvas();
+                } else {
+                    currentShape = e.target.dataset.shape;
+                    document.querySelector('#toolbar .active').classList.remove('active');
+                    e.target.classList.add('active');
+                }
+            });
+        });
+
+        // 画布事件监听
+        canvas.addEventListener('mousedown', startDrawing);
+        canvas.addEventListener('mousemove', draw);
+        canvas.addEventListener('mouseup', endDrawing);
+
+        // 样式控制事件监听
+        document.getElementById('bgColor').addEventListener('change', function(e) {
+            currentStyle.background = e.target.value;
+        });
+
+        document.getElementById('borderColor').addEventListener('change', function(e) {
+            currentStyle.borderColor = e.target.value;
+        });
+
+        document.getElementById('borderWidth').addEventListener('input', function(e) {
+            currentStyle.borderWidth = parseInt(e.target.value);
+        });
+
+        // 获取精确画布坐标
+        function getCanvasPos(e) {
+            const rect = canvas.getBoundingClientRect();
+            return {
+                x: e.clientX - rect.left,
+                y: e.clientY - rect.top
+            };
+        }
+
+        // 开始绘制
+        function startDrawing(e) {
+            const pos = getCanvasPos(e);
+            isDrawing = true;
+            startX = currentX = pos.x;
+            startY = currentY = pos.y;
+            
+            // 初始化自由线路径点
+            if (currentShape === 'line') {
+                freeLinePoints = [{ x: startX, y: startY }];
+            }
+        }
+
+        // 绘制过程
+        function draw(e) {
+            if (!isDrawing) return;
+            const pos = getCanvasPos(e);
+            currentX = pos.x;
+            currentY = pos.y;
+            
+            ctx.save();
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            
+            // 重绘历史记录
+            doStack.forEach(shape => drawShape(shape));
+            
+            // 绘制当前预览
+            drawPreview();
+            ctx.restore();
+
+            // 记录自由线路径点
+            if (currentShape === 'line') {
+                freeLinePoints.push({ x: currentX, y: currentY });
+            }
+        }
+
+        // 绘制预览图形
+        function drawPreview() {
+            ctx.beginPath();
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 2;
+            
+            switch(currentShape) {
+                case 'line':
+                    drawFreeLinePreview();
+                    break;
+                    
+                case 'sline':
+                    ctx.moveTo(startX, startY);
+                    ctx.lineTo(currentX, currentY);
+                    break;
+                    
+                case 'circle':
+                    const radius = Math.sqrt((currentX - startX) ** 2 + (currentY - startY) ** 2);
+                    ctx.arc(startX, startY, radius, 0, Math.PI * 2);
+                    break;
+                    
+                case 'rect':
+                    ctx.rect(startX, startY, currentX - startX, currentY - startY);
+                    break;
+                    
+                case 'roundRect':
+                    const width = currentX - startX;
+                    const height = currentY - startY;
+                    drawRoundedRect(startX, startY, width, height, 15);
+                    break;
+            }
+            ctx.stroke();
+        }
+
+        // 绘制自由线预览
+        function drawFreeLinePreview() {
+            ctx.beginPath();
+            ctx.moveTo(freeLinePoints[0].x, freeLinePoints[0].y);
+            freeLinePoints.forEach(point => {
+                ctx.lineTo(point.x, point.y);
+            });
+            ctx.stroke();
+        }
+
+        // 结束绘制
+        function endDrawing() {
+            if (!isDrawing) return;
+            isDrawing = false;
+            
+            // 保存不同图形数据（包含样式属性）
+            const newShape = {
+                // 基础属性
+                ...(currentShape === 'line' ? 
+                    { 
+                        shape: 'line',
+                        points: [...freeLinePoints]
+                    } : 
+                    { 
+                        shape: currentShape,
+                        startX,
+                        startY,
+                        endX: currentX,
+                        endY: currentY
+                    }),
+                // 样式属性
+                background: currentStyle.background,
+                borderColor: currentStyle.borderColor,
+                borderWidth: currentStyle.borderWidth
+            };
+            
+            doStack.push(newShape);
+            redoStack = [];
+            redraw();
+        }
+
+        function drawShape(shape) {
+            ctx.beginPath();
+            
+            // 设置图形样式
+            ctx.strokeStyle = shape.borderColor;
+            ctx.lineWidth = shape.borderWidth;
+            ctx.fillStyle = shape.background;
+
+            if (shape.shape === 'line') {
+                ctx.moveTo(shape.points[0].x, shape.points[0].y);
+                shape.points.forEach(point => {
+                    ctx.lineTo(point.x, point.y);
+                });
+                ctx.stroke();
+                return;
+            }
+
+            switch(shape.shape) {
+                case 'sline':
+                    ctx.moveTo(shape.startX, shape.startY);
+                    ctx.lineTo(shape.endX, shape.endY);
+                    ctx.stroke();
+                    break;
+                    
+                case 'circle': {
+                    const radius = Math.sqrt(
+                        (shape.endX - shape.startX) ** 2 + 
+                        (shape.endY - shape.startY) ** 2
+                    );
+                    ctx.arc(shape.startX, shape.startY, radius, 0, Math.PI * 2);
+                    drawStyledShape();
+                    break;
+                }
+                    
+                case 'rect': {
+                    ctx.rect(
+                        shape.startX,
+                        shape.startY,
+                        shape.endX - shape.startX,
+                        shape.endY - shape.startY
+                    );
+                    drawStyledShape();
+                    break;
+                }
+                    
+                case 'roundRect': {
+                    const width = shape.endX - shape.startX;
+                    const height = shape.endY - shape.startY;
+                    drawRoundedRect(shape.startX, shape.startY, width, height, 15);
+                    drawStyledShape();
+                    break;
+                }
+            }
+
+            // 样式应用函数
+            function drawStyledShape() {
+                // 先填充后描边
+                if (shape.background !== 'transparent') {
+                    ctx.fill();
+                }
+                ctx.stroke();
+            }
+        }
+
+
+
+        // 圆角矩形绘制函数
+        function drawRoundedRect(x, y, width, height, radius) {
+            ctx.beginPath();
+            ctx.moveTo(x + radius, y);
+            ctx.lineTo(x + width - radius, y);
+            ctx.quadraticCurveTo(x + width, y, x + width, y + radius);
+            ctx.lineTo(x + width, y + height - radius);
+            ctx.quadraticCurveTo(x + width, y + height, x + width - radius, y + height);
+            ctx.lineTo(x + radius, y + height);
+            ctx.quadraticCurveTo(x, y + height, x, y + height - radius);
+            ctx.lineTo(x, y + radius);
+            ctx.quadraticCurveTo(x, y, x + radius, y);
+            ctx.closePath();
+        }
+
+        // 功能函数
+        function undo() {
+            if (doStack.length > 0) {
+                redoStack.push(doStack.pop());
+                redraw();
+            }
+        }
+
+        function redo() {
+            if (redoStack.length > 0) {
+                doStack.push(redoStack.pop());
+                redraw();
+            }
+        }
+
+        function redraw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.fillStyle = '#fff';
+            ctx.fillRect(0, 0, canvas.width, canvas.height);
+            doStack.forEach(shape => drawShape(shape));
+        }
+
+        function clearCanvas() {
+            doStack = [];
+            redoStack = [];
+            redraw();
+        }
+    </script>
+</body>
+</html>
